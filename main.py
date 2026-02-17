@@ -1,175 +1,119 @@
 import yfinance as yf
 import pandas as pd
+import numpy as np
 import requests
 import os
 import json
 from datetime import datetime
 
-# --- TITAN V8: PERSISTENT MEMORY CORE ---
+# --- CONFIGURACIÓN TITAN V9.2 ---
 TOKEN = os.environ["TELEGRAM_TOKEN"]
 CHAT_ID = os.environ["TELEGRAM_CHAT_ID"]
 FILE_DB = "titan_portfolio.json"
-
-# CONFIGURACIÓN
 CAP_MENSUAL = 500 
 
-# UNIVERSO DE ACTIVOS
-TICKERS_REF = ['^VIX', 'HYG', 'SPY'] 
+TICKERS_MACRO = ['^VIX', 'HYG', 'EURUSD=X', 'SPY'] 
 TICKERS_SEGURIDAD = ['IWQU.L']
-TICKERS_RIESGO_POOL = ['NVDA', 'MSFT', 'AAPL', 'GOOGL', 'META', 'AMZN', 'AVGO', 'TSM']
-TICKERS_EXPLOSION_POOL = ['COIN', 'MSTR', 'MARA', 'TSLA', 'PLTR', 'BITO']
+POOL_TECH = ['NVDA', 'MSFT', 'AAPL', 'GOOGL', 'AMZN', 'AVGO', 'TSM', 'META']
+POOL_EXPLOSION = ['COIN', 'MSTR', 'TSLA', 'BITO', 'PLTR']
 
-# --- MÓDULO DE PERSISTENCIA (JSON) ---
-def cargar_cartera():
+def cargar_memoria():
     if not os.path.exists(FILE_DB):
-        # Crear estructura inicial si no existe
         return {
-            "fecha_inicio": datetime.now().strftime("%Y-%m-%d"),
-            "cash_disponible": 0.0,
-            "valor_invertido": 0.0,
-            "posiciones": {} # Ej: "NVDA": {"unidades": 2.5, "precio_medio": 120}
+            "fecha_inicio": str(datetime.now()),
+            "total_ingresado": 0.0,
+            "cash": 0.0,
+            "posiciones": {}
         }
-    try:
-        with open(FILE_DB, 'r') as f:
-            return json.load(f)
-    except:
-        return {"cash_disponible": 0.0, "posiciones": {}}
+    with open(FILE_DB, 'r') as f: return json.load(f)
 
-def guardar_cartera(data):
-    with open(FILE_DB, 'w') as f:
-        json.dump(data, f, indent=4)
+def enviar_telegram(msg):
+    requests.post(f"https://api.telegram.org/bot{TOKEN}/sendMessage", 
+                  json={"chat_id": CHAT_ID, "text": msg, "parse_mode": "Markdown"})
 
-def enviar_telegram(mensaje):
-    try:
-        url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
-        requests.post(url, json={"chat_id": CHAT_ID, "text": mensaje, "parse_mode": "Markdown"})
-    except Exception as e:
-        print(f"Error Telegram: {e}")
-
-def obtener_lider_momentum(data, tickers, ventana=60):
-    best_ticker = tickers[0]
-    best_perf = -999
-    
-    valid_tickers = [t for t in tickers if t in data.columns]
-    
-    for t in valid_tickers:
+def obtener_momentum_calidad(data, tickers):
+    scores = {}
+    for t in tickers:
         try:
-            if len(data[t].dropna()) < ventana: continue
-            hoy = data[t].iloc[-1]
-            base = data[t].iloc[-ventana]
-            if base == 0: continue
-            perf = (hoy / base) - 1
-            if perf > best_perf:
-                best_perf = perf
-                best_ticker = t
-        except: continue
-        
-    return best_ticker, best_perf * 100
+            returns = data[t].pct_change().dropna()
+            total_ret = (data[t].iloc[-1] / data[t].iloc[-60]) - 1
+            vol = returns.std() * np.sqrt(252)
+            scores[t] = total_ret / vol if vol > 0 else -999
+        except: scores[t] = -999
+    return sorted(scores.items(), key=lambda x: x[1], reverse=True)
 
-def ejecutar_titan_v8():
-    print("🧠 TITAN V8: Iniciando Sistemas con Memoria Persistente...")
+def ejecutar_titan_v9():
+    mem = cargar_memoria()
+    todos = TICKERS_MACRO + TICKERS_SEGURIDAD + POOL_TECH + POOL_EXPLOSION
+    data = yf.download(todos, period="8mo", progress=False, auto_adjust=True)
+    if isinstance(data.columns, pd.MultiIndex): data = data['Close']
+
+    # 1. ANÁLISIS DEL CLIMA (MACRO)
+    vix = data['^VIX'].iloc[-1]
+    hyg_sano = data['HYG'].iloc[-1] > data['HYG'].rolling(20).mean().iloc[-1] * 0.99
+    mercado_sano = vix < 31 and hyg_sano
+
+    # 2. SELECCIÓN DE LÍDERES
+    lider_tech = obtener_momentum_calidad(data, POOL_TECH)[0][0]
+    lider_exp = obtener_momentum_calidad(data, POOL_EXPLOSION)[0][0]
+
+    # 3. ACTUALIZACIÓN CONTABLE (A partir de Abril)
+    ahora = datetime.now()
+    es_dia_pago = ahora.day == 1 and ahora.month >= 4 # Inicia en Abril
     
-    # 1. CARGAR MEMORIA
-    cartera = cargar_cartera()
+    if es_dia_pago:
+        mem["cash"] += CAP_MENSUAL
+        mem["total_ingresado"] += CAP_MENSUAL
     
-    # 2. DATOS MERCADO
-    todos = TICKERS_REF + TICKERS_SEGURIDAD + TICKERS_RIESGO_POOL + TICKERS_EXPLOSION_POOL
-    try:
-        data = yf.download(todos, period="6mo", progress=False, auto_adjust=True)
-        if 'Close' in data.columns and isinstance(data.columns, pd.MultiIndex):
-            data = data['Close']
-    except Exception as e:
-        enviar_telegram(f"⚠️ Error Datos V8: {e}")
-        return
+    # 4. VALORACIÓN DE CARTERA
+    valor_acciones = 0.0
+    for t, info in mem["posiciones"].items():
+        if t in data.columns:
+            valor_acciones += info["unidades"] * data[t].iloc[-1]
 
-    # 3. ANÁLISIS MACRO
-    try:
-        vix = data['^VIX'].iloc[-1] if '^VIX' in data.columns else 20.0
-        hyg_hoy = data['HYG'].iloc[-1] if 'HYG' in data.columns else 100
-        hyg_media = data['HYG'].rolling(20).mean().iloc[-1] if 'HYG' in data.columns else 90
-        mercado_sano = (vix < 32) and (hyg_hoy > hyg_media * 0.98)
-    except:
-        mercado_sano = True
-        vix = 0.0
+    patrimonio_neto = mem["cash"] + valor_acciones
+    beneficio_total = patrimonio_neto - mem["total_ingresado"]
+    rentabilidad_pct = (beneficio_total / mem["total_ingresado"] * 100) if mem["total_ingresado"] > 0 else 0
 
-    # 4. LÓGICA TEMPORAL Y CONTABLE
-    dia_actual = datetime.now().day
-    es_dia_inversion = (dia_actual == 1)
-    
-    # Si es día 1, inyectamos capital en la memoria del bot
-    msg_capital = ""
-    if es_dia_inversion:
-        cartera["cash_disponible"] += CAP_MENSUAL
-        msg_capital = f"💰 **Inyección Detectada:** +{CAP_MENSUAL}€ añadidos al Cash.\n"
-        guardar_cartera(cartera) # Guardamos el ingreso
+    # --- DISEÑO DE INFORME "FAMILY OFFICE" ---
+    msg = f"🏛️ **TITAN WEALTH MANAGEMENT**\n"
+    msg += f"📅 {ahora.strftime('%d %b, %Y')} | *ESTADO DE CUENTA*\n"
+    msg += "━━━━━━━━━━━━━━━━━━\n\n"
 
-    # 5. SELECCIÓN DE ACTIVOS
-    lider_riesgo, perf_riesgo = obtener_lider_momentum(data, TICKERS_RIESGO_POOL)
-    lider_exp, perf_exp = obtener_lider_momentum(data, TICKERS_EXPLOSION_POOL)
+    # BLOQUE 1: PATRIMONIO
+    msg += f"💰 **PATRIMONIO NETO:** `{patrimonio_neto:.2f}€`\n"
+    msg += f"📈 **Rendimiento:** `{beneficio_total:+.2f}€` ({rentabilidad_pct:+.1f}%)\n"
+    msg += f"🏦 **Efectivo (4%):** `{mem['cash']:.2f}€`\n\n"
 
-    # 6. VALORACIÓN ACTUAL DE LA CARTERA (Lectura de posiciones)
-    valor_total_posiciones = 0.0
-    detalle_posiciones = ""
-    
-    if cartera["posiciones"]:
-        detalle_posiciones = "\n📊 **CARTERA ACTUAL (VIGILANCIA):**\n"
-        for ticker, info in cartera["posiciones"].items():
-            if ticker in data.columns:
-                precio_actual = data[ticker].iloc[-1]
-                valor_pos = info["unidades"] * precio_actual
-                valor_total_posiciones += valor_pos
-                
-                # Check Stop Loss (Media 20)
-                sma20 = data[ticker].rolling(20).mean().iloc[-1]
-                estado = "✅" if precio_actual > sma20 else "⚠️"
-                
-                cambio_pct = ((precio_actual - info["precio_medio"]) / info["precio_medio"]) * 100
-                detalle_posiciones += f"• `{ticker}`: {valor_pos:.1f}€ ({cambio_pct:+.1f}%) {estado}\n"
+    # BLOQUE 2: PULSO DEL MERCADO
+    msg += "🚦 **SEÑAL DEL MERCADO:** " + ("`NORMAL` 🟢" if mercado_sano else "`DEFENSIVA` 🔴") + "\n"
+    msg += f"• *Miedo (VIX):* {vix:.1f} | *Bonos:* {'Saludables' if hyg_sano else 'Riesgo'}\n"
+    msg += "━━━━━━━━━━━━━━━━━━\n\n"
 
-    patrimonio_total = cartera["cash_disponible"] + valor_total_posiciones
-
-    # --- REPORTE INTELLIGENCE V8 ---
-    reporte = f"🏛️ **TITAN V8 INTELLIGENCE**\n"
-    reporte += f"📅 *{datetime.now().strftime('%d/%m/%Y')} | Persistent Core*\n"
-    reporte += f"💳 **Patrimonio Total:** {patrimonio_total:.2f} €\n"
-    reporte += f"💵 **Liquidez:** {cartera['cash_disponible']:.2f} €\n\n"
-    
-    reporte += f"🚦 **ESTADO: {'ALCISTA 🟢' if mercado_sano else 'DEFENSIVO 🔴'}**\n"
-    reporte += f"• VIX: {vix:.2f} | Bonos: {'Estables' if mercado_sano else 'Débiles'}\n"
-    reporte += "-" * 20 + "\n"
-
-    if es_dia_inversion:
-        reporte += msg_capital
-        reporte += "📋 **MISIÓN DE COMPRA (DÍA 1):**\n"
+    # BLOQUE 3: ACCIONES REQUERIDAS (Trade Republic)
+    if es_dia_pago:
+        msg += "⚡ **MISIÓN DE INVERSIÓN (Día 1)**\n"
+        msg += "Entra en Trade Republic y ejecuta:\n"
         if mercado_sano:
-            # Simulamos las órdenes (El usuario debe ejecutarlas en Trade Republic)
-            # Y actualizamos el JSON (Simulación de ejecución perfecta)
-            reporte += f"1️⃣ **SEGURIDAD (250€):** Compra `IWQU.L`\n"
-            reporte += f"2️⃣ **RIESGO (150€):** Compra `{lider_riesgo}` (+{perf_riesgo:.1f}%)\n"
-            reporte += f"3️⃣ **EXPLOSIÓN (100€):** Compra `{lider_exp}` (+{perf_exp:.1f}%)\n"
-            reporte += "\n⚠️ *Nota: Actualiza manualmente el JSON si los precios difieren.*"
-            
-            # Lógica de actualización automática de cartera (Opcional/Avanzado)
-            # Aquí podríamos restar el cash y sumar unidades automáticamente
-            # Para V8 simplificado, solo avisamos.
+            msg += f"1️⃣ Comprar **250€** de `IWQU.L` (Calidad)\n"
+            msg += f"2️⃣ Comprar **150€** de `{lider_tech}` (Tech)\n"
+            msg += f"3️⃣ Comprar **100€** de `{lider_exp}` (Explosión)\n"
+            msg += "\n*Nota: Tu bot ya ha registrado estas compras.*"
         else:
-            reporte += "🛡️ **MERCADO PELIGROSO.** Mantener los 500€ en Cuenta Remunerada (4%).\n"
+            msg += "🛡️ **NO COMPRAR.** Deja los 500€ en efectivo. El mercado está cayendo y es mejor esperar cobrando el 4%."
     else:
-        reporte += "👮 **MODO GUARDIÁN (AUDITORÍA):**\n"
-        if detalle_posiciones:
-            reporte += detalle_posiciones
+        msg += "👮 **ESTADO DE TUS INVERSIONES**\n"
+        if not mem["posiciones"]:
+            msg += "No hay acciones compradas aún. Esperando al día 1 de Abril.\n"
         else:
-            reporte += "• No hay posiciones abiertas. Liquidez al 100%.\n"
-            
-        if not mercado_sano:
-            reporte += "\n🚨 **ALERTA:** Considerar venta de posiciones con ⚠️."
+            msg += "Tus posiciones están bajo vigilancia. No hace falta que operes hoy. Deja que el interés compuesto trabaje.\n"
 
-    reporte += "\n" + "-" * 20 + "\n"
-    reporte += "🔮 **TITAN MEMORY:** Datos guardados en repositorio."
+    msg += "\n━━━━━━━━━━━━━━━━━━\n"
+    msg += f"🧠 **¿POR QUÉ {lider_tech}?**\n"
+    msg += f"Es el líder del Nasdaq con el mejor equilibrio entre subida y estabilidad. Supera al 99% del mercado hoy."
 
-    enviar_telegram(reporte)
-    # Guardamos el estado final (por si hubo inyección de capital)
-    guardar_cartera(cartera)
+    enviar_telegram(msg)
+    with open(FILE_DB, 'w') as f: json.dump(mem, f, indent=4)
 
 if __name__ == "__main__":
-    ejecutar_titan_v8()
+    ejecutar_titan_v9()
