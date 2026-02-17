@@ -1,0 +1,22 @@
+name: Ejecucion Diaria Bot Financiero
+on:
+  schedule:
+    - cron: '30 14 * * 1-5' # 15:30 hora española (aprox)
+  workflow_dispatch: # Esto permite darle a un botón para probarlo ahora
+
+jobs:
+  ejecutar:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - name: Configurar Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.9'
+      - name: Instalar librerías
+        run: pip install yfinance pandas requests
+      - name: Correr el Bot
+        env:
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python main.py
