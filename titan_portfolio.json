@@ -2,5 +2,7 @@
     "fecha_inicio": "2026-02-17",
     "cash_disponible": 0.0,
     "valor_invertido": 0.0,
-    "posiciones": {}
+    "posiciones": {},
+    "total_ingresado": 0.0,
+    "cash": 0.0
 }
