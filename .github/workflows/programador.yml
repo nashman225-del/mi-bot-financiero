@@ -1,22 +1,41 @@
-name: Ejecucion Diaria Bot Financiero
+name: TITAN V8 — Daily Runner (Persistent)
+
 on:
   schedule:
-    - cron: '30 14 * * 1-5' # 15:30 hora española (aprox)
-  workflow_dispatch: # Esto permite darle a un botón para probarlo ahora
+    # 08:00 UTC = 10:00 España (aprox)
+    - cron: '0 8 * * 1-5'
+  workflow_dispatch:
+
+permissions:
+  contents: write  # IMPORTANTE: Permiso para guardar el archivo
 
 jobs:
-  ejecutar:
+  titan:
     runs-on: ubuntu-latest
+    
     steps:
-      - uses: actions/checkout@v3
-      - name: Configurar Python
-        uses: actions/setup-python@v4
+      - name: 📥 Checkout
+        uses: actions/checkout@v4
+
+      - name: 🐍 Setup Python 3.11
+        uses: actions/setup-python@v5
         with:
-          python-version: '3.9'
-      - name: Instalar librerías
-        run: pip install yfinance pandas requests
-      - name: Correr el Bot
+          python-version: '3.11'
+
+      - name: 📦 Instalar dependencias
+        run: |
+          pip install --upgrade pip
+          pip install yfinance pandas numpy requests
+
+      - name: 🚀 Ejecutar TITAN V8.0
         env:
-          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_TOKEN:   ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: python main.py
+
+      - name: 💾 Guardar Memoria (Auto-Commit)
+        run: |
+          git config --global user.name 'Titan Bot V8'
+          git config --global user.email 'titan@bot.com'
+          git add titan_portfolio.json
+          git diff --quiet && git diff --staged --quiet || (git commit -m "💾 Titan Memory Update [$(date +'%Y-%m-%d')]" && git push)
